@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>التحذيرات الجوية</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>⛈ التحذيرات الجوية</h1>
+    <span class="muted" id="updated"></span>
+    <span class="sp"></span>
+    <a href="{{ url_for('admin') }}">الإدارة</a>
+  </header>
+
+  <div class="app">
+    <aside class="side" aria-label="لوحة التحذيرات">
+      <section class="card">
+        <h2>موقعك</h2>
+        <div class="row">
+          <select id="place" class="grow" aria-label="اختر مدينة"><option value="">اختر مدينة…</option></select>
+          <button class="btn" id="locate" type="button">📍 موقعي</button>
+        </div>
+        <p class="muted" style="margin:8px 0 0">أو انقر أي نقطة على الخريطة.</p>
+        <div id="here" style="margin-top:10px"></div>
+      </section>
+
+      <section class="card">
+        <h2>كل التحذيرات النشطة <span id="count" class="muted"></span></h2>
+        <div class="chips" id="sevfilter" role="group" aria-label="تصفية حسب الخطورة"></div>
+        <div id="list" style="margin-top:10px"></div>
+      </section>
+
+      <section class="card">
+        <h2>طبقات الطقس</h2>
+        <div id="layers"><span class="muted">جارٍ التحميل…</span></div>
+      </section>
+    </aside>
+
+    <div id="map" role="application" aria-label="خريطة التحذيرات"></div>
+  </div>
+
+  <dialog id="dlg">
+    <div class="dlg-head" id="dlg-head"></div>
+    <div class="dlg-body" id="dlg-body"></div>
+    <div class="dlg-body" style="border-top:1px solid var(--line);padding-top:10px;display:flex;gap:8px;justify-content:space-between">
+      <a id="dlg-xml" target="_blank" rel="noopener">ملف CAP</a>
+      <button class="btn" id="dlg-close" type="button">إغلاق</button>
+    </div>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  "use strict";
+  const SEV = {
+    Extreme: {c: "#b91c1c", l: "شديدة الخطورة"}, Severe: {c: "#ea580c", l: "خطيرة"},
+    Moderate: {c: "#ca8a04", l: "متوسطة"}, Minor: {c: "#0284c7", l: "طفيفة"}, Unknown: {c: "#6b7280", l: "غير محددة"}
+  };
+  const URG = {Immediate: "فوري", Expected: "متوقع", Future: "قادم", Past: "منتهٍ", Unknown: "غير محدد"};
+  const CERT = {Observed: "مرصود", Likely: "مرجّح", Possible: "محتمل", Unlikely: "غير مرجّح", Unknown: "غير محدد"};
+  const STATE = {active: "نشط", scheduled: "مجدول", expired: "منتهٍ", cancelled: "ملغى"};
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString("ar-u-nu-latn", {dateStyle: "medium", timeStyle: "short"}) : "—";
+  const sev = (s) => SEV[s] || SEV.Unknown;
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
+  };
+
+  function remaining(iso) {
+    if (!iso) return "";
+    const ms = new Date(iso) - Date.now();
+    if (ms <= 0) return "انتهى";
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `تنتهي بعد ${m} دقيقة`;
+    const h = Math.floor(m / 60);
+    return h < 48 ? `تنتهي بعد ${h} ساعة` : `تنتهي بعد ${Math.floor(h / 24)} يوماً`;
+  }
+
+  // ---------- الخريطة ----------
+  const map = L.map("map", {zoomControl: true, worldCopyJump: true}).setView([34.8, 38.5], 6);
+  const bases = {
+    "خريطة فاتحة": L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO"}),
+    "خريطة الشوارع": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19, attribution: "© OpenStreetMap"}),
+    "خريطة داكنة": L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO"})
+  };
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  bases[dark ? "خريطة داكنة" : "خريطة فاتحة"].addTo(map);
+  L.control.layers(bases, null, {position: "topleft"}).addTo(map);
+
+  const legend = L.control({position: "bottomleft"});
+  legend.onAdd = () => {
+    const d = L.DomUtil.create("div", "legend");
+    d.innerHTML = Object.values(SEV).slice(0, 4).map((v) => `<div><span class="dot" style="background:${v.c}"></span> ${v.l}</div>`).join("");
+    return d;
+  };
+  legend.addTo(map);
+
+  const alertLayer = L.layerGroup().addTo(map);
+  let pin = null, point = null, features = [], activeSev = new Set(Object.keys(SEV));
+  const layerById = {};
+
+  // ---------- التحذيرات ----------
+  async function loadAlerts() {
+    const q = point ? `&lat=${point.lat}&lon=${point.lon}` : "";
+    try {
+      const r = await fetch(`/api/alerts?future=1&lang=ar${q}`);
+      if (!r.ok) throw new Error(r.status);
+      features = (await r.json()).features;
+      $("updated").textContent = "آخر تحديث: " + new Date().toLocaleTimeString("ar-u-nu-latn", {hour: "2-digit", minute: "2-digit"});
+    } catch (e) {
+      $("updated").textContent = "تعذّر التحديث";
+      return;
+    }
+    drawAlerts();
+    renderList();
+    renderHere();
+  }
+
+  function drawAlerts() {
+    alertLayer.clearLayers();
+    const order = ["Unknown", "Minor", "Moderate", "Severe", "Extreme"];  // الأخطر فوق
+    const vis = features.filter((f) => activeSev.has(f.properties.severity) && f.geometry);
+    vis.sort((a, b) => order.indexOf(a.properties.severity) - order.indexOf(b.properties.severity));
+    for (const f of vis) {
+      const s = sev(f.properties.severity);
+      const scheduled = f.properties.state === "scheduled";
+      const g = L.geoJSON(f, {style: {color: s.c, weight: 2, fillColor: s.c, fillOpacity: scheduled ? 0.08 : 0.28, dashArray: scheduled ? "6 5" : null}});
+      g.on("click", (e) => { L.DomEvent.stop(e); setPoint(e.latlng.lat, e.latlng.lng, null, false); });
+      g.bindTooltip(`${esc(f.properties.event)} — ${s.l}`, {sticky: true});
+      g.addTo(alertLayer);
+      layerById[f.id] = g;
+    }
+  }
+
+  function itemHtml(p) {
+    const s = sev(p.severity);
+    return `<button class="alert-item ${esc(p.severity)}" data-id="${esc(p.id)}" type="button">
+      <div class="t">${esc(p.event || p.headline)} <span class="badge ${esc(p.severity)}">${s.l}</span>
+        ${p.state === "scheduled" ? '<span class="badge state">مجدول</span>' : ""}</div>
+      <div class="m">${esc(p.areaDesc)}</div>
+      <div class="m">${p.state === "scheduled" ? "تبدأ " + fmt(p.effective) : remaining(p.expires)}</div>
+    </button>`;
+  }
+
+  function renderList() {
+    const vis = features.filter((f) => activeSev.has(f.properties.severity));
+    $("count").textContent = `(${features.length})`;
+    $("list").innerHTML = vis.length ? vis.map((f) => itemHtml(f.properties)).join("") :
+      '<div class="empty">لا توجد تحذيرات نشطة حالياً ✓</div>';
+  }
+
+  function renderHere() {
+    const box = $("here");
+    if (!point) { box.innerHTML = ""; return; }
+    const hit = features.filter((f) => f.properties.affectsPoint && f.properties.state === "active");
+    const soon = features.filter((f) => f.properties.affectsPoint && f.properties.state === "scheduled");
+    const name = esc(point.name || `نقطة (${point.lat.toFixed(3)}، ${point.lon.toFixed(3)})`);
+    let h = `<div style="font-weight:700;margin-bottom:6px">${name}</div>`;
+    h += hit.length ? hit.map((f) => itemHtml(f.properties)).join("") :
+      '<div class="empty" style="border-color:#2e9e5b;color:inherit">✓ لا توجد تحذيرات نشطة في هذا الموقع</div>';
+    if (soon.length) h += `<div class="muted" style="margin:8px 0 4px">تحذيرات قادمة لهذا الموقع:</div>` + soon.map((f) => itemHtml(f.properties)).join("");
+    box.innerHTML = h;
+  }
+
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".alert-item");
+    if (!b) return;
+    const f = features.find((x) => x.id === b.dataset.id);
+    if (!f) return;
+    const g = layerById[f.id];
+    if (g) map.fitBounds(g.getBounds(), {maxZoom: 9, padding: [30, 30]});
+    openDetails(f.properties);
+  });
+
+  function openDetails(p) {
+    const s = sev(p.severity);
+    $("dlg-head").style.borderTopColor = s.c;
+    $("dlg-head").innerHTML = `<div class="row"><span class="badge ${esc(p.severity)}">${s.l}</span>
+      <span class="badge state">${STATE[p.state] || ""}</span></div>
+      <h2 style="margin:8px 0 2px;font-size:20px">${esc(p.headline || p.event)}</h2>
+      <div class="muted">${esc(p.event)}</div>`;
+    const block = (t, v) => v ? `<h3>${t}</h3><p>${esc(v)}</p>` : "";
+    $("dlg-body").innerHTML = `<dl class="kv">
+        <dt>المنطقة</dt><dd>${esc(p.areaDesc) || "—"}</dd>
+        <dt>تبدأ</dt><dd>${fmt(p.effective)}</dd>
+        <dt>تنتهي</dt><dd>${fmt(p.expires)} <span class="muted">(${remaining(p.expires)})</span></dd>
+        <dt>الإلحاح</dt><dd>${URG[p.urgency] || p.urgency}</dd>
+        <dt>اليقين</dt><dd>${CERT[p.certainty] || p.certainty}</dd>
+        <dt>المصدر</dt><dd>${esc(p.senderName)}</dd>
+        <dt>وقت الإصدار</dt><dd>${fmt(p.sent)}</dd>
+      </dl>${block("الوصف", p.description)}${block("التعليمات والإرشادات", p.instruction)}`;
+    if (p.web && /^https?:\/\//.test(p.web)) {
+      const a = document.createElement("a"); a.href = p.web; a.target = "_blank"; a.rel = "noopener"; a.textContent = "رابط المصدر";
+      $("dlg-body").append(a);
+    }
+    $("dlg-xml").href = `/api/alerts/${encodeURIComponent(p.id)}/cap.xml`;
+    $("dlg").showModal();
+  }
+  $("dlg-close").onclick = () => $("dlg").close();
+  $("dlg").addEventListener("click", (e) => { if (e.target === $("dlg")) $("dlg").close(); });
+
+  // ---------- تصفية الخطورة ----------
+  $("sevfilter").innerHTML = Object.entries(SEV).slice(0, 4).map(([k, v]) =>
+    `<label class="chip"><input type="checkbox" value="${k}" checked><span class="dot" style="background:${v.c}"></span>${v.l}</label>`).join("");
+  $("sevfilter").addEventListener("change", (e) => {
+    activeSev = new Set([...document.querySelectorAll("#sevfilter input:checked")].map((i) => i.value));
+    activeSev.add("Unknown");
+    drawAlerts(); renderList();
+  });
+
+  // ---------- الموقع ----------
+  function setPoint(lat, lon, name, fly = true) {
+    point = {lat, lon, name};
+    if (pin) pin.remove();
+    pin = L.marker([lat, lon], {icon: L.divIcon({className: "", html: '<div class="pin" style="width:18px;height:18px"></div>', iconSize: [18, 18]})}).addTo(map);
+    if (fly) map.flyTo([lat, lon], Math.max(map.getZoom(), 8));
+    store.set("point", JSON.stringify(point));
+    loadAlerts();
+  }
+  map.on("click", (e) => { $("place").value = ""; setPoint(e.latlng.lat, e.latlng.lng, null, false); });
+
+  let places = [];
+  fetch("/api/places").then((r) => r.json()).then((p) => {
+    places = p;
+    $("place").insertAdjacentHTML("beforeend", p.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join(""));
+  });
+  $("place").onchange = (e) => {
+    const p = places.find((x) => String(x.id) === e.target.value);
+    if (p) setPoint(p.lat, p.lon, p.name);
+  };
+  $("locate").onclick = () => {
+    if (!navigator.geolocation) return alert("المتصفح لا يدعم تحديد الموقع");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { $("place").value = ""; setPoint(pos.coords.latitude, pos.coords.longitude, "موقعك الحالي"); },
+      () => alert("تعذّر تحديد موقعك. اختر مدينة أو انقر على الخريطة."), {timeout: 10000});
+  };
+
+  // ---------- طبقات الطقس ----------
+  let radar = null;
+  function addTileLayerControl(def) {
+    const id = "ly_" + def.id;
+    const wrap = document.createElement("div");
+    wrap.className = "layer";
+    wrap.innerHTML = `<label class="chip" style="border:0;padding:0"><input type="checkbox" id="${id}"> ${esc(def.name)}</label>
+      <input type="range" min="10" max="100" value="${Math.round(def.opacity * 100)}" aria-label="الشفافية" style="display:none">`;
+    $("layers").append(wrap);
+    const cb = wrap.querySelector("input[type=checkbox]"), rng = wrap.querySelector("input[type=range]");
+    let lyr = null;
+    if (def.kind === "rainviewer") {
+      wrap.insertAdjacentHTML("beforeend", `<div class="radar-ctl" hidden>
+        <button class="btn sm" type="button" data-r="play">▶</button>
+        <input type="range" min="0" max="0" value="0" data-r="slider" aria-label="إطار الرادار">
+        <span class="muted" data-r="time"></span></div>`);
+      radar = {def, ctl: wrap.querySelector(".radar-ctl"), frames: [], layers: {}, idx: 0, timer: null, opacity: def.opacity};
+      cb.onchange = async () => {
+        if (cb.checked) { rng.style.display = ""; await radarShow(); radar.ctl.hidden = false; }
+        else { rng.style.display = "none"; radarHide(); radar.ctl.hidden = true; }
+      };
+      rng.oninput = () => { radar.opacity = rng.value / 100; Object.values(radar.layers).forEach((l, i) => { if (l._shown) l.setOpacity(radar.opacity); }); };
+      radar.ctl.querySelector("[data-r=play]").onclick = (e) => radarPlay(e.target);
+      radar.ctl.querySelector("[data-r=slider]").oninput = (e) => { radarStop(); radarGo(+e.target.value); };
+    } else {
+      cb.onchange = () => {
+        if (cb.checked) {
+          lyr = lyr || L.tileLayer(def.url, {opacity: rng.value / 100, maxNativeZoom: def.maxZoom, maxZoom: 19, attribution: def.attribution || "", zIndex: 5});
+          lyr.addTo(map); rng.style.display = "";
+        } else { lyr && lyr.remove(); rng.style.display = "none"; }
+      };
+      rng.oninput = () => lyr && lyr.setOpacity(rng.value / 100);
+    }
+  }
+
+  async function radarShow() {
+    try {
+      const j = await (await fetch("https://api.rainviewer.com/public/weather-maps.json")).json();
+      radar.host = j.host;
+      radar.frames = [...(j.radar.past || []), ...(j.radar.nowcast || [])];
+    } catch { alert("تعذّر تحميل رادار الأمطار"); return; }
+    const s = radar.ctl.querySelector("[data-r=slider]");
+    s.max = Math.max(0, radar.frames.length - 1);
+    const past = (radar.frames.length) - 1;
+    radarGo(past, true);
+  }
+  function radarLayer(i) {
+    if (!radar.layers[i]) {
+      const f = radar.frames[i];
+      radar.layers[i] = L.tileLayer(`${radar.host}${f.path}/256/{z}/{x}/{y}/2/1_1.png`,
+        {opacity: 0, maxNativeZoom: radar.def.maxZoom || 7, maxZoom: 19, zIndex: 6, attribution: radar.def.attribution || ""}).addTo(map);
+    }
+    return radar.layers[i];
+  }
+  function radarGo(i, first) {
+    if (!radar.frames.length) return;
+    Object.values(radar.layers).forEach((l) => { if (l._shown) { l.setOpacity(0); l._shown = false; } });
+    const l = radarLayer(i);
+    l.setOpacity(radar.opacity); l._shown = true;
+    radar.idx = i;
+    const s = radar.ctl.querySelector("[data-r=slider]"); s.value = i;
+    radar.ctl.querySelector("[data-r=time]").textContent = new Date(radar.frames[i].time * 1000).toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
+  }
+  function radarPlay(btn) {
+    if (radar.timer) return radarStop();
+    btn.textContent = "⏸";
+    radar.timer = setInterval(() => radarGo((radar.idx + 1) % radar.frames.length), 700);
+  }
+  function radarStop() {
+    clearInterval(radar.timer); radar.timer = null;
+    const b = radar.ctl.querySelector("[data-r=play]"); if (b) b.textContent = "▶";
+  }
+  function radarHide() {
+    radarStop();
+    Object.values(radar.layers).forEach((l) => l.remove());
+    radar.layers = {};
+  }
+
+  fetch("/api/config").then((r) => r.json()).then((cfg) => {
+    if (!store.get("point")) map.setView(cfg.center, cfg.zoom);
+    $("layers").innerHTML = "";
+    if (!cfg.layers.length) $("layers").innerHTML = '<span class="muted">لا توجد طبقات مفعّلة.</span>';
+    cfg.layers.forEach(addTileLayerControl);
+  });
+
+  // ---------- بدء التشغيل ----------
+  try {
+    const saved = JSON.parse(store.get("point") || "null");
+    if (saved && isFinite(saved.lat) && isFinite(saved.lon)) { setPoint(saved.lat, saved.lon, saved.name); }
+    else loadAlerts();
+  } catch { loadAlerts(); }
+  setInterval(loadAlerts, 60000);
+  </script>
+</body>
+</html>

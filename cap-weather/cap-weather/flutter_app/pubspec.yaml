@@ -1,0 +1,26 @@
+name: weather_warnings
+description: عرض التحذيرات الجوية (CAP) على خريطة تفاعلية - موبايل وويب وسطح مكتب.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  http: ^1.2.2
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  intl: any
+  geolocator: ^13.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

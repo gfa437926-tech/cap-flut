@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>إدارة التحذيرات</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <h1>⚙ إدارة التحذيرات الجوية</h1>
+  <span class="sp"></span>
+  <a href="{{ url_for('index') }}" target="_blank">عرض الموقع ↗</a>
+  <a href="{{ url_for('logout') }}">خروج</a>
+</header>
+
+<div class="admin">
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" data-t="alerts" aria-selected="true">التحذيرات</button>
+    <button class="tab" role="tab" data-t="sources" aria-selected="false">مصادر CAP</button>
+    <button class="tab" role="tab" data-t="places" aria-selected="false">المدن</button>
+    <button class="tab" role="tab" data-t="layers" aria-selected="false">طبقات الطقس</button>
+    <button class="tab" role="tab" data-t="settings" aria-selected="false">الإعدادات</button>
+  </div>
+
+  <!-- ===== التحذيرات ===== -->
+  <section id="t-alerts">
+    <div class="grid2">
+      <form class="card" id="form" autocomplete="off">
+        <h2 id="form-title">إصدار تحذير جديد</h2>
+        <p class="muted" style="margin-top:0">ارسم المنطقة على الخريطة (مضلع أو مستطيل أو دائرة) ثم املأ التفاصيل.</p>
+        <label class="f">نوع الحدث
+          <input type="text" name="event" list="events" required maxlength="120" placeholder="مثال: عاصفة رعدية">
+          <datalist id="events">
+            <option>عاصفة رعدية</option><option>أمطار غزيرة</option><option>رياح شديدة</option><option>فيضانات مفاجئة</option>
+            <option>عاصفة ثلجية</option><option>موجة حر</option><option>موجة برد</option><option>صقيع</option>
+            <option>ضباب كثيف</option><option>عاصفة غبارية</option><option>برَد</option><option>أمواج عالية</option>
+          </datalist>
+        </label>
+        <div class="cols2">
+          <label class="f">الخطورة (Severity)
+            <select name="severity" id="sel-sev"></select></label>
+          <label class="f">الإلحاح (Urgency)
+            <select name="urgency" id="sel-urg"></select></label>
+          <label class="f">اليقين (Certainty)
+            <select name="certainty" id="sel-cer"></select></label>
+          <label class="f">الحالة
+            <select name="status"><option value="Actual">فعلي</option><option value="Test">تجريبي (لا يظهر للجمهور)</option></select></label>
+        </div>
+        <label class="f">العنوان المختصر
+          <input type="text" name="headline" maxlength="200" placeholder="مثال: تحذير من أمطار غزيرة على الساحل"></label>
+        <label class="f">وصف الحالة
+          <textarea name="description"></textarea></label>
+        <label class="f">التعليمات والإرشادات
+          <textarea name="instruction"></textarea></label>
+        <label class="f">وصف المنطقة
+          <input type="text" name="areaDesc" placeholder="مثال: المنطقة الساحلية"></label>
+        <div class="cols2">
+          <label class="f">يبدأ <input type="datetime-local" name="effective" required></label>
+          <label class="f">ينتهي <input type="datetime-local" name="expires" required></label>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button class="btn primary" type="submit">إصدار التحذير</button>
+          <button class="btn" type="button" id="reset">مسح النموذج</button>
+        </div>
+        <p class="muted" id="draw-info" style="margin-bottom:0"></p>
+      </form>
+
+      <div>
+        <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:520px"></div></div>
+        <div class="card" style="margin-top:14px">
+          <h2>جميع التحذيرات</h2>
+          <div class="tablewrap"><table class="t" id="alert-table"></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== المصادر ===== -->
+  <section id="t-sources" hidden>
+    <div class="grid2">
+      <div>
+        <form class="card" id="src-form">
+          <h2>إضافة مصدر CAP</h2>
+          <p class="muted" style="margin-top:0">رابط ملف CAP مباشر، أو خلاصة Atom/RSS تشير إلى ملفات CAP.</p>
+          <label class="f">الاسم <input type="text" name="name" required></label>
+          <label class="f">الرابط <input type="url" name="url" required placeholder="https://…" dir="ltr"></label>
+          <label class="f">فترة الاستعلام (ثوانٍ، 60 كحد أدنى) <input type="number" name="interval_s" value="300" min="60"></label>
+          <button class="btn primary">إضافة</button>
+        </form>
+        <div class="card" style="margin-top:14px">
+          <h2>رفع ملف CAP يدوياً</h2>
+          <input type="file" id="upload" accept=".xml,.cap,application/xml,text/xml">
+          <button class="btn" id="upload-btn" style="margin-top:8px">رفع ومعالجة</button>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h2>استقبال CAP عبر API</h2>
+          <p class="muted" style="margin-top:0">يمكن لأي نظام إرسال رسائل CAP إلى هذا العنوان:</p>
+          <pre class="code" id="curl"></pre>
+        </div>
+      </div>
+      <div class="card"><h2>المصادر المضبوطة</h2><div class="tablewrap"><table class="t" id="src-table"></table></div></div>
+    </div>
+  </section>
+
+  <!-- ===== المدن ===== -->
+  <section id="t-places" hidden>
+    <div class="grid2">
+      <form class="card" id="place-form">
+        <h2>إضافة مدينة</h2>
+        <p class="muted" style="margin-top:0">انقر على الخريطة لتعبئة الإحداثيات.</p>
+        <label class="f">الاسم <input type="text" name="name" required></label>
+        <label class="f">الاسم بالإنجليزية <input type="text" name="name_en" dir="ltr"></label>
+        <div class="cols2">
+          <label class="f">خط العرض <input type="number" name="lat" step="any" required dir="ltr"></label>
+          <label class="f">خط الطول <input type="number" name="lon" step="any" required dir="ltr"></label>
+        </div>
+        <button class="btn primary">إضافة</button>
+        <div class="tablewrap" style="margin-top:14px"><table class="t" id="place-table"></table></div>
+      </form>
+      <div class="card" style="padding:0;overflow:hidden"><div id="map-places" style="height:520px"></div></div>
+    </div>
+  </section>
+
+  <!-- ===== الطبقات ===== -->
+  <section id="t-layers" hidden>
+    <div class="grid2">
+      <form class="card" id="layer-form">
+        <h2>إضافة طبقة بلاطات (XYZ)</h2>
+        <p class="muted" style="margin-top:0">أي مزوّد بلاطات https، مثل بلاطات الرياح أو الصواعق أو الأقمار الصناعية.</p>
+        <label class="f">الاسم <input type="text" name="name" required></label>
+        <label class="f">قالب الرابط <input type="text" name="url" required dir="ltr" placeholder="https://…/{z}/{x}/{y}.png"></label>
+        <div class="cols2">
+          <label class="f">الشفافية (0.1–1) <input type="number" name="opacity" value="0.6" step="0.1" min="0.1" max="1"></label>
+          <label class="f">أقصى تقريب أصلي <input type="number" name="max_zoom" value="12" min="1" max="19"></label>
+        </div>
+        <label class="f">الإسناد (Attribution) <input type="text" name="attribution"></label>
+        <button class="btn primary">إضافة</button>
+      </form>
+      <div class="card"><h2>الطبقات</h2><div class="tablewrap"><table class="t" id="layer-table"></table></div>
+        <p class="muted">طبقات OpenWeatherMap تتطلب مفتاحاً يُضاف من تبويب الإعدادات. التحذيرات تُرسم دائماً فوق طبقات الطقس.</p></div>
+    </div>
+  </section>
+
+  <!-- ===== الإعدادات ===== -->
+  <section id="t-settings" hidden>
+    <form class="card" id="set-form" style="max-width:560px">
+      <h2>الإعدادات</h2>
+      <label class="f">معرّف الجهة المُصدِرة (sender) <input type="text" name="sender_id" dir="ltr" required></label>
+      <label class="f">اسم الجهة المُصدِرة <input type="text" name="sender_name" required></label>
+      <label class="f">مفتاح OpenWeatherMap (اختياري) <input type="text" name="owm_key" dir="ltr" autocomplete="off"></label>
+      <div class="cols2">
+        <label class="f">مركز الخريطة الافتراضي — عرض <input type="number" step="any" name="map_lat" dir="ltr"></label>
+        <label class="f">طول <input type="number" step="any" name="map_lon" dir="ltr"></label>
+        <label class="f">التقريب الافتراضي <input type="number" name="map_zoom" min="1" max="18"></label>
+        <label class="f">عرض التحذيرات التجريبية للجمهور
+          <select name="show_tests"><option value="0">لا</option><option value="1">نعم</option></select></label>
+      </div>
+      <div class="row">
+        <button class="btn primary">حفظ</button>
+        <button class="btn" type="button" id="use-view">استخدم عرض الخريطة الحالي</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+"use strict";
+const ENUMS = {{ enums | tojson }};
+const API_TOKEN = {{ api_token | tojson }};
+const SEV_AR = {Extreme: "شديدة الخطورة", Severe: "خطيرة", Moderate: "متوسطة", Minor: "طفيفة", Unknown: "غير محددة"};
+const URG_AR = {Immediate: "فوري", Expected: "متوقع", Future: "قادم", Past: "منتهٍ", Unknown: "غير محدد"};
+const CER_AR = {Observed: "مرصود", Likely: "مرجّح", Possible: "محتمل", Unlikely: "غير مرجّح", Unknown: "غير محدد"};
+const STATE_AR = {active: "نشط", scheduled: "مجدول", expired: "منتهٍ", cancelled: "ملغى"};
+const SEV_COLOR = {Extreme: "#b91c1c", Severe: "#ea580c", Moderate: "#ca8a04", Minor: "#0284c7", Unknown: "#6b7280"};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmt = (iso) => iso ? new Date(iso).toLocaleString("ar-u-nu-latn", {dateStyle: "short", timeStyle: "short"}) : "—";
+
+function toast(msg, err) {
+  const t = document.createElement("div");
+  t.className = "toast" + (err ? " err" : ""); t.textContent = msg; document.body.append(t);
+  setTimeout(() => t.remove(), 4000);
+}
+async function api(path, method = "GET", body) {
+  const r = await fetch(path, {method, headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) { location.href = "/admin/login"; throw new Error("unauthorized"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.error || "حدث خطأ", true); throw new Error(j.error || r.status); }
+  return j;
+}
+const localInput = (d) => { const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+// ---------- التبويبات ----------
+let tabMaps = {};
+$("tabs").onclick = (e) => {
+  const b = e.target.closest(".tab"); if (!b) return;
+  document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", t === b));
+  ["alerts", "sources", "places", "layers", "settings"].forEach((n) => $("t-" + n).hidden = n !== b.dataset.t);
+  if (b.dataset.t === "alerts") setTimeout(() => map.invalidateSize(), 50);
+  if (b.dataset.t === "places") { initPlacesMap(); setTimeout(() => placesMap.invalidateSize(), 50); }
+};
+
+// ---------- الخريطة الرئيسية + الرسم ----------
+L.drawLocal.draw.toolbar.buttons = {polygon: "ارسم مضلعاً", rectangle: "ارسم مستطيلاً", circle: "ارسم دائرة"};
+L.drawLocal.draw.toolbar.actions = {title: "إلغاء الرسم", text: "إلغاء"};
+L.drawLocal.draw.toolbar.finish = {title: "إنهاء الرسم", text: "إنهاء"};
+L.drawLocal.draw.toolbar.undo = {title: "حذف آخر نقطة", text: "حذف آخر نقطة"};
+L.drawLocal.draw.handlers.polygon.tooltip = {start: "انقر لبدء رسم المنطقة", cont: "انقر لمتابعة الرسم", end: "انقر على أول نقطة للإغلاق"};
+L.drawLocal.draw.handlers.rectangle.tooltip = {start: "اضغط واسحب لرسم مستطيل"};
+L.drawLocal.draw.handlers.circle.tooltip = {start: "اضغط واسحب لرسم دائرة"};
+L.drawLocal.draw.handlers.simpleshape = {tooltip: {end: "اترك الفأرة للإنهاء"}};
+L.drawLocal.edit.toolbar.buttons = {edit: "تعديل المناطق", editDisabled: "لا مناطق للتعديل", remove: "حذف مناطق", removeDisabled: "لا مناطق للحذف"};
+
+const map = L.map("map").setView([34.8, 38.5], 6);
+const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark ? "dark" : "light"}_all/{z}/{x}/{y}{r}.png`,
+  {maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO"}).addTo(map);
+
+const ctx = L.featureGroup().addTo(map);       // التحذيرات النشطة (للسياق)
+const drawn = new L.FeatureGroup().addTo(map);  // ما يرسمه المدير
+map.addControl(new L.Control.Draw({
+  position: "topleft", edit: {featureGroup: drawn},
+  draw: {polygon: {allowIntersection: false, showArea: false, shapeOptions: {color: "#1d5fd1"}},
+         rectangle: {showArea: false, shapeOptions: {color: "#1d5fd1"}},
+         circle: {shapeOptions: {color: "#1d5fd1"}}, polyline: false, marker: false, circlemarker: false}
+}));
+
+function circleToRing(c, steps = 48) {
+  const R = 6371008.8, lat = c.getLatLng().lat * Math.PI / 180, lon = c.getLatLng().lng * Math.PI / 180, d = c.getRadius() / R, ring = [];
+  for (let k = 0; k < steps; k++) {
+    const b = 2 * Math.PI * k / steps;
+    const la = Math.asin(Math.sin(lat) * Math.cos(d) + Math.cos(lat) * Math.sin(d) * Math.cos(b));
+    const lo = lon + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(lat), Math.cos(d) - Math.sin(lat) * Math.sin(la));
+    ring.push([+(lo * 180 / Math.PI).toFixed(6), +(la * 180 / Math.PI).toFixed(6)]);
+  }
+  return ring;
+}
+function drawnPolygons() {
+  const out = [];
+  drawn.eachLayer((l) => {
+    if (l instanceof L.Circle) out.push(circleToRing(l));
+    else if (l instanceof L.Polygon) {
+      const ll = l.getLatLngs()[0];
+      out.push(ll.map((p) => [+p.lng.toFixed(6), +p.lat.toFixed(6)]));
+    }
+  });
+  return out;
+}
+function updateDrawInfo() {
+  const n = drawnPolygons().length;
+  $("draw-info").textContent = n ? `عدد المناطق المرسومة: ${n}` : "لم تُرسم أي منطقة بعد.";
+}
+map.on(L.Draw.Event.CREATED, (e) => { drawn.addLayer(e.layer); updateDrawInfo(); });
+map.on(L.Draw.Event.DELETED, updateDrawInfo);
+map.on(L.Draw.Event.EDITED, updateDrawInfo);
+
+// ---------- النموذج ----------
+const fill = (id, arr, labels, def) => { $(id).innerHTML = arr.map((v) => `<option value="${v}" ${v === def ? "selected" : ""}>${labels[v] || v}</option>`).join(""); };
+fill("sel-sev", ENUMS.severities, SEV_AR, "Moderate");
+fill("sel-urg", ENUMS.urgencies, URG_AR, "Expected");
+fill("sel-cer", ENUMS.certainties, CER_AR, "Likely");
+let replaces = null;
+
+function resetForm() {
+  $("form").reset();
+  replaces = null; drawn.clearLayers(); updateDrawInfo();
+  $("form-title").textContent = "إصدار تحذير جديد";
+  const now = new Date();
+  $("form").effective.value = localInput(now);
+  $("form").expires.value = localInput(new Date(now.getTime() + 6 * 3600e3));
+  fill("sel-sev", ENUMS.severities, SEV_AR, "Moderate");
+}
+$("reset").onclick = resetForm;
+
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target, polys = drawnPolygons();
+  if (!polys.length) return toast("ارسم منطقة التحذير على الخريطة أولاً", true);
+  const body = {
+    event: f.event.value, severity: f.severity.value, urgency: f.urgency.value, certainty: f.certainty.value,
+    status: f.status.value, headline: f.headline.value, description: f.description.value,
+    instruction: f.instruction.value, areaDesc: f.areaDesc.value, polygons: polys,
+    effective: new Date(f.effective.value).toISOString(), expires: new Date(f.expires.value).toISOString(),
+    replaces
+  };
+  await api("/admin/api/alerts", "POST", body);
+  toast(replaces ? "تم إصدار التحديث" : "تم إصدار التحذير");
+  resetForm(); loadAlerts();
+};
+
+// ---------- قائمة التحذيرات ----------
+async function loadAlerts() {
+  const list = await api("/admin/api/alerts");
+  $("alert-table").innerHTML = `<tr><th>الحدث</th><th>الخطورة</th><th>الحالة</th><th>ينتهي</th><th>المصدر</th><th></th></tr>` +
+    (list.length ? list.map((a) => `<tr>
+      <td><b>${esc(a.event)}</b><div class="muted">${esc(a.areaDesc)}${a.msgType !== "Alert" ? " · " + esc(a.msgType) : ""}</div></td>
+      <td><span class="badge ${esc(a.severity)}">${SEV_AR[a.severity] || ""}</span></td>
+      <td><span class="badge state">${STATE_AR[a.state] || ""}${a.status !== "Actual" ? " · " + esc(a.status) : ""}</span></td>
+      <td>${fmt(a.expires)}</td><td class="muted">${esc(a.origin)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn sm" data-a="zoom" data-id="${esc(a.id)}">عرض</button>
+        ${a.msgType === "Alert" && (a.state === "active" || a.state === "scheduled") ?
+          `<button class="btn sm" data-a="edit" data-id="${esc(a.id)}">تحديث</button>
+           <button class="btn sm danger" data-a="cancel" data-id="${esc(a.id)}">إلغاء</button>` : ""}
+        <a class="btn sm" style="text-decoration:none" href="/api/alerts/${encodeURIComponent(a.id)}/cap.xml" target="_blank">XML</a>
+        <button class="btn sm danger" data-a="del" data-id="${esc(a.id)}">حذف</button>
+      </td></tr>`).join("") : `<tr><td colspan="6" class="muted">لا توجد تحذيرات.</td></tr>`);
+  // سياق الخريطة: النشطة فقط
+  ctx.clearLayers();
+  for (const a of list.filter((x) => x.state === "active" && x.msgType === "Alert")) {
+    try {
+      const f = await api("/admin/api/alerts/" + encodeURIComponent(a.id));
+      if (f.geometry) L.geoJSON(f, {style: {color: SEV_COLOR[a.severity] || "#666", weight: 1.5, fillOpacity: .12, dashArray: "4 4"}, interactive: false}).addTo(ctx);
+    } catch { /* ignore */ }
+  }
+}
+$("alert-table").onclick = async (e) => {
+  const b = e.target.closest("button[data-a]"); if (!b) return;
+  const id = b.dataset.id, act = b.dataset.a;
+  if (act === "zoom" || act === "edit") {
+    const f = await api("/admin/api/alerts/" + encodeURIComponent(id));
+    if (!f.geometry) return toast("لا توجد منطقة لهذا التحذير", true);
+    if (act === "zoom") { map.fitBounds(L.geoJSON(f).getBounds(), {maxZoom: 9}); window.scrollTo({top: 0, behavior: "smooth"}); return; }
+    resetForm(); replaces = id;
+    const p = f.properties, form = $("form");
+    form.event.value = p.event || ""; form.severity.value = p.severity; form.urgency.value = p.urgency; form.certainty.value = p.certainty;
+    form.headline.value = p.headline || ""; form.description.value = p.description || ""; form.instruction.value = p.instruction || "";
+    form.areaDesc.value = p.areaDesc || "";
+    form.effective.value = localInput(new Date()); form.expires.value = localInput(new Date(p.expires || Date.now() + 6 * 3600e3));
+    for (const poly of f.geometry.coordinates) drawn.addLayer(L.polygon(poly[0].map(([x, y]) => [y, x]), {color: "#1d5fd1"}));
+    map.fitBounds(drawn.getBounds(), {maxZoom: 9});
+    $("form-title").textContent = "تحديث تحذير (يُصدر كرسالة Update)";
+    updateDrawInfo(); window.scrollTo({top: 0, behavior: "smooth"});
+  } else if (act === "cancel") {
+    if (!confirm("إلغاء هذا التحذير؟ سيُصدر كرسالة Cancel ويُخفى عن الجمهور.")) return;
+    await api(`/admin/api/alerts/${encodeURIComponent(id)}/cancel`, "POST"); toast("تم الإلغاء"); loadAlerts();
+  } else if (act === "del") {
+    if (!confirm("حذف نهائي من قاعدة البيانات؟")) return;
+    await api("/admin/api/alerts/" + encodeURIComponent(id), "DELETE"); loadAlerts();
+  }
+};
+
+// ---------- المصادر ----------
+$("curl").textContent = `curl -X POST ${location.origin}/api/cap \\\n  -H "Authorization: Bearer ${API_TOKEN}" \\\n  -H "Content-Type: application/xml" \\\n  --data-binary @alert.xml`;
+async function loadSources() {
+  const s = await api("/admin/api/sources");
+  $("src-table").innerHTML = `<tr><th>الاسم</th><th>الرابط</th><th>كل</th><th>آخر تشغيل</th><th></th></tr>` +
+    (s.length ? s.map((x) => `<tr><td>${esc(x.name)}</td><td dir="ltr" class="muted" style="max-width:240px;overflow-wrap:anywhere">${esc(x.url)}</td>
+      <td>${x.interval_s}ث</td><td><div class="muted">${fmt(x.last_run)}</div><div>${esc(x.last_status || "")}</div></td>
+      <td style="white-space:nowrap"><button class="btn sm" data-a="poll" data-id="${x.id}">استعلام الآن</button>
+        <button class="btn sm" data-a="toggle" data-id="${x.id}" data-en="${x.enabled ? 0 : 1}">${x.enabled ? "إيقاف" : "تشغيل"}</button>
+        <button class="btn sm danger" data-a="del" data-id="${x.id}">حذف</button></td></tr>`).join("") :
+      `<tr><td colspan="5" class="muted">لا توجد مصادر.</td></tr>`);
+}
+$("src-form").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target;
+  await api("/admin/api/sources", "POST", {name: f.name.value, url: f.url.value, interval_s: +f.interval_s.value});
+  f.reset(); f.interval_s.value = 300; loadSources();
+};
+$("src-table").onclick = async (e) => {
+  const b = e.target.closest("button[data-a]"); if (!b) return;
+  const id = b.dataset.id;
+  if (b.dataset.a === "poll") { b.disabled = true; const r = await api(`/admin/api/sources/${id}/poll`, "POST"); toast(r.status); loadSources(); loadAlerts(); }
+  else if (b.dataset.a === "toggle") { await api("/admin/api/sources/" + id, "PATCH", {enabled: b.dataset.en === "1"}); loadSources(); }
+  else if (confirm("حذف المصدر؟")) { await api("/admin/api/sources/" + id, "DELETE"); loadSources(); }
+};
+$("upload-btn").onclick = async () => {
+  const file = $("upload").files[0]; if (!file) return toast("اختر ملفاً أولاً", true);
+  const fd = new FormData(); fd.append("file", file);
+  const r = await fetch("/admin/api/upload", {method: "POST", body: fd}); const j = await r.json();
+  if (!r.ok) return toast(j.error || "فشل", true);
+  toast(`جديد: ${j.new} — مكرر: ${j.duplicate}${j.errors.length ? " — أخطاء: " + j.errors[0] : ""}`, j.errors.length > 0 && !j.new);
+  loadAlerts();
+};
+
+// ---------- المدن ----------
+let placesMap = null, placePin = null;
+function initPlacesMap() {
+  if (placesMap) return;
+  placesMap = L.map("map-places").setView(map.getCenter(), map.getZoom());
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark ? "dark" : "light"}_all/{z}/{x}/{y}{r}.png`, {maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO"}).addTo(placesMap);
+  placesMap.on("click", (e) => {
+    $("place-form").lat.value = e.latlng.lat.toFixed(5); $("place-form").lon.value = e.latlng.lng.toFixed(5);
+    if (placePin) placePin.remove(); placePin = L.marker(e.latlng).addTo(placesMap);
+  });
+}
+async function loadPlaces() {
+  const p = await fetch("/api/places").then((r) => r.json());
+  $("place-table").innerHTML = `<tr><th>المدينة</th><th>الإحداثيات</th><th></th></tr>` + p.map((x) =>
+    `<tr><td>${esc(x.name)}</td><td dir="ltr" class="muted">${x.lat.toFixed(3)}, ${x.lon.toFixed(3)}</td>
+     <td><button class="btn sm danger" type="button" data-id="${x.id}">حذف</button></td></tr>`).join("");
+}
+$("place-form").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target;
+  await api("/admin/api/places", "POST", {name: f.name.value, name_en: f.name_en.value, lat: f.lat.value, lon: f.lon.value});
+  f.reset(); loadPlaces();
+};
+$("place-table").onclick = async (e) => {
+  const b = e.target.closest("button[data-id]"); if (!b || !confirm("حذف المدينة؟")) return;
+  await api("/admin/api/places/" + b.dataset.id, "DELETE"); loadPlaces();
+};
+
+// ---------- الطبقات ----------
+async function loadLayers() {
+  const l = await api("/admin/api/layers");
+  $("layer-table").innerHTML = `<tr><th>الطبقة</th><th>مفعّلة</th><th></th></tr>` + l.map((x) =>
+    `<tr><td>${esc(x.name)}<div class="muted" dir="ltr" style="overflow-wrap:anywhere">${x.kind === "rainviewer" ? "RainViewer radar" : esc((x.url || "").replace(/appid=[^&]*/, "appid=…"))}</div></td>
+     <td><input type="checkbox" data-id="${esc(x.id)}" ${x.enabled ? "checked" : ""} aria-label="تفعيل ${esc(x.name)}"></td>
+     <td>${x.id.startsWith("custom_") ? `<button class="btn sm danger" type="button" data-del="${esc(x.id)}">حذف</button>` : ""}</td></tr>`).join("");
+}
+$("layer-table").onchange = async (e) => { const c = e.target.closest("input[data-id]"); if (c) { await api("/admin/api/layers/" + c.dataset.id, "PATCH", {enabled: c.checked}); } };
+$("layer-table").onclick = async (e) => { const b = e.target.closest("button[data-del]"); if (b && confirm("حذف الطبقة؟")) { await api("/admin/api/layers/" + b.dataset.del, "DELETE"); loadLayers(); } };
+$("layer-form").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target;
+  await api("/admin/api/layers", "POST", {name: f.name.value, url: f.url.value, opacity: f.opacity.value, max_zoom: f.max_zoom.value, attribution: f.attribution.value});
+  f.reset(); f.opacity.value = 0.6; f.max_zoom.value = 12; loadLayers();
+};
+
+// ---------- الإعدادات ----------
+async function loadSettings() {
+  const s = await api("/admin/api/settings"), f = $("set-form");
+  for (const k of ["sender_id", "sender_name", "owm_key", "map_lat", "map_lon", "map_zoom", "show_tests"]) f[k].value = s[k] ?? "";
+}
+$("set-form").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, body = {};
+  for (const k of ["sender_id", "sender_name", "owm_key", "map_lat", "map_lon", "map_zoom", "show_tests"]) body[k] = f[k].value;
+  await api("/admin/api/settings", "PUT", body); toast("تم الحفظ");
+};
+$("use-view").onclick = () => {
+  const c = map.getCenter(), f = $("set-form");
+  f.map_lat.value = c.lat.toFixed(4); f.map_lon.value = c.lng.toFixed(4); f.map_zoom.value = map.getZoom();
+  toast("اضغط حفظ لتثبيت العرض");
+};
+
+resetForm(); loadAlerts(); loadSources(); loadPlaces(); loadLayers(); loadSettings();
+</script>
+</body>
+</html>
